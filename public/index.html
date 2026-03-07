@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PIPE — File Processing Pipeline</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <div class="header-left">
+        <div class="logo">
+          <span class="logo-mark">▶</span>
+          <span class="logo-text">PIPE</span>
+        </div>
+        <div class="tagline">line-by-line file transformer</div>
+      </div>
+      <div class="header-right">
+        <button id="btn-workspaces" class="btn btn-workspaces" title="Load workspace">
+          <span class="btn-icon">◫</span>
+          <span>Workspaces</span>
+        </button>
+        <button id="btn-save-workspace" class="btn btn-save-ws" title="Save current pipeline as workspace">
+          <span class="btn-icon">⊙</span>
+          <span>Save Workspace</span>
+        </button>
+        <div class="header-sep"></div>
+        <button id="btn-run" class="btn btn-run" disabled>
+          <span class="btn-icon">▶</span>
+          <span>Run Pipeline</span>
+        </button>
+        <button id="btn-download" class="btn btn-download" disabled>
+          <span class="btn-icon">↓</span>
+          <span>Download</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div id="main">
+      <!-- Left panel: File input + Pipeline -->
+      <div id="panel-left">
+
+        <!-- File drop zone -->
+        <section class="panel-section" id="section-upload">
+          <div class="section-label">01 — INPUT FILE</div>
+          <div id="dropzone" class="dropzone">
+            <div class="dropzone-inner">
+              <div class="drop-icon">◈</div>
+              <div class="drop-text">Drop file here</div>
+              <div class="drop-sub">or <label for="file-input" class="file-label">browse</label></div>
+              <input type="file" id="file-input" hidden>
+            </div>
+            <div class="file-info" id="file-info" hidden>
+              <div class="file-icon">◈</div>
+              <div class="file-details">
+                <div class="file-name" id="file-name"></div>
+                <div class="file-meta" id="file-meta"></div>
+              </div>
+              <button class="file-remove" id="file-remove">✕</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Pipeline -->
+        <section class="panel-section" id="section-pipeline">
+          <div class="section-header">
+            <div class="section-label">02 — PIPELINE</div>
+            <button id="btn-add-node" class="btn-add">
+              <span>+ ADD NODE</span>
+            </button>
+          </div>
+
+          <div id="pipeline-container">
+            <div id="pipeline-empty" class="pipeline-empty">
+              <div class="empty-text">No transformation nodes yet.</div>
+              <div class="empty-sub">Add nodes to build your pipeline.</div>
+            </div>
+            <div id="nodes-list"></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right panel: Output + Log -->
+      <div id="panel-right">
+        <!-- Stats bar -->
+        <div id="stats-bar" class="stats-bar hidden">
+          <div class="stat">
+            <span class="stat-label">TOTAL</span>
+            <span class="stat-val" id="stat-total">—</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">PASSED</span>
+            <span class="stat-val stat-ok" id="stat-passed">—</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">DROPPED</span>
+            <span class="stat-val stat-drop" id="stat-dropped">—</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">ERRORS</span>
+            <span class="stat-val stat-err" id="stat-errors">—</span>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-bar" id="progress-bar"></div>
+          </div>
+        </div>
+
+        <!-- Output preview -->
+        <section class="panel-section output-section" id="section-output">
+          <div class="section-label">03 — OUTPUT PREVIEW</div>
+          <div id="output-area" class="output-area">
+            <div class="output-placeholder">
+              <span class="placeholder-icon">◌</span>
+              <span>Output will appear here after running the pipeline.</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Node Editor Modal -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="modal" class="modal">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-label">NODE EDITOR</span>
+          <input type="text" id="modal-node-name" class="modal-node-name" placeholder="Node name...">
+        </div>
+        <button id="modal-close" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="editor-hint">
+          <span class="hint-label">Available variables:</span>
+          <code>line</code> — current line string &nbsp;|&nbsp;
+          <code>lineNumber</code> — line index (1-based)<br>
+          <span class="hint-label">Return:</span>
+          transformed string, or <code>null</code>/<code>undefined</code> to skip line.
+        </div>
+        <div class="editor-wrap">
+          <div class="editor-gutter" id="editor-gutter"></div>
+          <textarea id="modal-editor" class="code-editor" spellcheck="false" placeholder="// Transform 'line' and return the result
+return line.trim();"></textarea>
+        </div>
+        <div class="editor-test">
+          <div class="test-label">QUICK TEST</div>
+          <div class="test-row">
+            <input type="text" id="test-input" class="test-input" placeholder="Test input line...">
+            <button id="btn-test" class="btn-test">RUN TEST</button>
+          </div>
+          <div id="test-output" class="test-output hidden"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="modal-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="btn-save-to-library" class="btn-save-lib" title="Save to library for reuse">◈ Save to Library</button>
+        <button id="modal-save" class="btn btn-save">Save Node</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Library Modal -->
+  <div id="library-overlay" class="modal-overlay hidden">
+    <div id="library-modal" class="modal library-modal">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-label">NODE LIBRARY</span>
+          <span class="library-subtitle">Select a node to add to pipeline</span>
+        </div>
+        <button id="library-close" class="modal-close">✕</button>
+      </div>
+      <div class="library-body">
+        <div class="library-toolbar">
+          <input type="text" id="library-search" class="library-search" placeholder="Search nodes…">
+          <div id="library-categories" class="library-categories"></div>
+          <button id="btn-new-from-scratch" class="btn-new-scratch">
+            <span class="scratch-icon">+</span>
+            <span>New from scratch</span>
+          </button>
+        </div>
+        <div id="library-grid" class="library-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Workspace Modal -->
+  <div id="ws-overlay" class="modal-overlay hidden">
+    <div id="ws-modal" class="modal ws-modal">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-label">WORKSPACES</span>
+          <span class="library-subtitle">Saved pipelines</span>
+        </div>
+        <button id="ws-close" class="modal-close">✕</button>
+      </div>
+      <div id="ws-list" class="ws-list"></div>
+    </div>
+  </div>
+
+  <!-- Save Workspace Modal -->
+  <div id="ws-save-overlay" class="modal-overlay hidden">
+    <div class="modal ws-save-modal">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-label">SAVE WORKSPACE</span>
+        </div>
+        <button id="ws-save-close" class="modal-close">✕</button>
+      </div>
+      <div class="ws-save-body">
+        <label class="ws-save-label">Workspace name</label>
+        <input type="text" id="ws-name-input" class="ws-name-input" placeholder="My Pipeline…" maxlength="80">
+        <div id="ws-save-preview" class="ws-save-preview"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="ws-save-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="ws-save-confirm" class="btn btn-save">Save</button>
+      </div>
+    </div>
+  </div>
+  <script src="js/app.js"></script>
+</body>
+</html>

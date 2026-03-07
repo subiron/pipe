@@ -1,0 +1,275 @@
+[
+  {
+    "id": "builtin-trim",
+    "name": "Trim Whitespace",
+    "category": "Text",
+    "description": "Remove leading and trailing whitespace",
+    "code": "return line.trim();"
+  },
+  {
+    "id": "builtin-trim-left",
+    "name": "Trim Left",
+    "category": "Text",
+    "description": "Remove leading whitespace only",
+    "code": "return line.trimStart();"
+  },
+  {
+    "id": "builtin-trim-right",
+    "name": "Trim Right",
+    "category": "Text",
+    "description": "Remove trailing whitespace only",
+    "code": "return line.trimEnd();"
+  },
+  {
+    "id": "builtin-uppercase",
+    "name": "Uppercase",
+    "category": "Text",
+    "description": "Convert entire line to uppercase",
+    "code": "return line.toUpperCase();"
+  },
+  {
+    "id": "builtin-lowercase",
+    "name": "Lowercase",
+    "category": "Text",
+    "description": "Convert entire line to lowercase",
+    "code": "return line.toLowerCase();"
+  },
+  {
+    "id": "builtin-capitalize",
+    "name": "Capitalize Words",
+    "category": "Text",
+    "description": "Capitalize the first letter of each word",
+    "code": "return line.replace(/\\b\\w/g, c => c.toUpperCase());"
+  },
+  {
+    "id": "builtin-capitalize-first",
+    "name": "Capitalize First",
+    "category": "Text",
+    "description": "Capitalize only the first character of the line",
+    "code": "return line.charAt(0).toUpperCase() + line.slice(1);"
+  },
+  {
+    "id": "builtin-reverse",
+    "name": "Reverse String",
+    "category": "Text",
+    "description": "Reverse the characters in the line",
+    "code": "return line.split('').reverse().join('');"
+  },
+  {
+    "id": "builtin-length",
+    "name": "Get Length",
+    "category": "Text",
+    "description": "Replace line with its character count",
+    "code": "return String(line.length);"
+  },
+  {
+    "id": "builtin-word-count",
+    "name": "Word Count",
+    "category": "Text",
+    "description": "Replace line with number of words",
+    "code": "return String(line.trim().split(/\\s+/).filter(Boolean).length);"
+  },
+  {
+    "id": "builtin-prepend-linenum",
+    "name": "Prepend Line Number",
+    "category": "Text",
+    "description": "Add line number at the start: '1: content'",
+    "code": "return `${lineNumber}: ${line}`;"
+  },
+  {
+    "id": "builtin-append-linenum",
+    "name": "Append Line Number",
+    "category": "Text",
+    "description": "Add line number at the end: 'content [1]'",
+    "code": "return `${line} [${lineNumber}]`;"
+  },
+  {
+    "id": "builtin-collapse-spaces",
+    "name": "Collapse Spaces",
+    "category": "Text",
+    "description": "Replace multiple spaces with a single space",
+    "code": "return line.replace(/\\s+/g, ' ').trim();"
+  },
+  {
+    "id": "builtin-remove-punctuation",
+    "name": "Remove Punctuation",
+    "category": "Text",
+    "description": "Strip all punctuation characters",
+    "code": "return line.replace(/[^\\w\\s]/g, '');"
+  },
+  {
+    "id": "builtin-remove-numbers",
+    "name": "Remove Numbers",
+    "category": "Text",
+    "description": "Remove all digit characters",
+    "code": "return line.replace(/\\d/g, '');"
+  },
+  {
+    "id": "builtin-keep-numbers",
+    "name": "Keep Numbers Only",
+    "category": "Text",
+    "description": "Remove everything except digits and dots",
+    "code": "return line.replace(/[^\\d.]/g, '');"
+  },
+  {
+    "id": "builtin-replace-tabs",
+    "name": "Tabs to Spaces",
+    "category": "Text",
+    "description": "Replace tab characters with 4 spaces",
+    "code": "return line.replace(/\\t/g, '    ');"
+  },
+  {
+    "id": "builtin-slug",
+    "name": "Slugify",
+    "category": "Text",
+    "description": "Convert to URL-friendly slug (lowercase, hyphens)",
+    "code": "return line.toLowerCase().trim().replace(/[^\\w\\s-]/g, '').replace(/\\s+/g, '-').replace(/-+/g, '-');"
+  },
+  {
+    "id": "builtin-filter-empty",
+    "name": "Skip Empty Lines",
+    "category": "Filter",
+    "description": "Drop lines that are empty or whitespace only",
+    "code": "if (!line.trim()) return null;\nreturn line;"
+  },
+  {
+    "id": "builtin-filter-min-length",
+    "name": "Skip Short Lines",
+    "category": "Filter",
+    "description": "Drop lines shorter than 3 characters",
+    "code": "const MIN = 3;\nif (line.trim().length < MIN) return null;\nreturn line;"
+  },
+  {
+    "id": "builtin-filter-comments",
+    "name": "Skip Comment Lines",
+    "category": "Filter",
+    "description": "Drop lines starting with # or //",
+    "code": "if (line.trim().startsWith('#') || line.trim().startsWith('//')) return null;\nreturn line;"
+  },
+  {
+    "id": "builtin-filter-duplicates",
+    "name": "Deduplicate Lines",
+    "category": "Filter",
+    "description": "Drop duplicate lines (keeps first occurrence)",
+    "code": "if (!this._seen) this._seen = new Set();\nif (this._seen.has(line)) return null;\nthis._seen.add(line);\nreturn line;"
+  },
+  {
+    "id": "builtin-filter-contains",
+    "name": "Keep Lines Containing",
+    "category": "Filter",
+    "description": "Keep only lines that contain a keyword",
+    "code": "const KEYWORD = 'error'; // change this\nreturn line.toLowerCase().includes(KEYWORD) ? line : null;"
+  },
+  {
+    "id": "builtin-filter-not-contains",
+    "name": "Drop Lines Containing",
+    "category": "Filter",
+    "description": "Drop lines that contain a keyword",
+    "code": "const KEYWORD = 'debug'; // change this\nreturn line.toLowerCase().includes(KEYWORD) ? null : line;"
+  },
+  {
+    "id": "builtin-filter-starts",
+    "name": "Keep Lines Starting With",
+    "category": "Filter",
+    "description": "Keep only lines that start with a prefix",
+    "code": "const PREFIX = 'ERROR';\nreturn line.startsWith(PREFIX) ? line : null;"
+  },
+  {
+    "id": "builtin-filter-regex",
+    "name": "Filter by Regex",
+    "category": "Filter",
+    "description": "Keep only lines matching a regular expression",
+    "code": "const PATTERN = /^\\d{4}-\\d{2}-\\d{2}/; // ISO date prefix\nreturn PATTERN.test(line) ? line : null;"
+  },
+  {
+    "id": "builtin-extract-email",
+    "name": "Extract Email",
+    "category": "Extract",
+    "description": "Extract first email address found in line",
+    "code": "const m = line.match(/[\\w.+-]+@[\\w-]+\\.[\\w.]+/);\nreturn m ? m[0] : null;"
+  },
+  {
+    "id": "builtin-extract-url",
+    "name": "Extract URL",
+    "category": "Extract",
+    "description": "Extract first URL found in line",
+    "code": "const m = line.match(/https?:\\/\\/[^\\s]+/);\nreturn m ? m[0] : null;"
+  },
+  {
+    "id": "builtin-extract-numbers",
+    "name": "Extract Numbers",
+    "category": "Extract",
+    "description": "Extract all numbers found, space-separated",
+    "code": "const nums = line.match(/-?\\d+(\\.\\d+)?/g);\nreturn nums ? nums.join(' ') : null;"
+  },
+  {
+    "id": "builtin-csv-col1",
+    "name": "CSV — First Column",
+    "category": "CSV",
+    "description": "Extract the first comma-separated column",
+    "code": "return line.split(',')[0] ?? null;"
+  },
+  {
+    "id": "builtin-csv-col",
+    "name": "CSV — Pick Column",
+    "category": "CSV",
+    "description": "Extract column at a given index (0-based)",
+    "code": "const COL = 1; // 0-based index\nconst parts = line.split(',');\nreturn parts[COL] !== undefined ? parts[COL].trim() : null;"
+  },
+  {
+    "id": "builtin-json-field",
+    "name": "JSON — Extract Field",
+    "category": "JSON",
+    "description": "Parse line as JSON and extract a field",
+    "code": "try {\n  const obj = JSON.parse(line);\n  return String(obj.message ?? obj.msg ?? JSON.stringify(obj));\n} catch {\n  return null;\n}"
+  },
+  {
+    "id": "builtin-json-pretty",
+    "name": "JSON — Pretty Print",
+    "category": "JSON",
+    "description": "Parse and re-format JSON with indentation",
+    "code": "try {\n  return JSON.stringify(JSON.parse(line), null, 2);\n} catch {\n  return line;\n}"
+  },
+  {
+    "id": "builtin-add-prefix",
+    "name": "Add Prefix",
+    "category": "Transform",
+    "description": "Prepend a fixed string to every line",
+    "code": "const PREFIX = '> ';\nreturn PREFIX + line;"
+  },
+  {
+    "id": "builtin-add-suffix",
+    "name": "Add Suffix",
+    "category": "Transform",
+    "description": "Append a fixed string to every line",
+    "code": "const SUFFIX = ';';\nreturn line + SUFFIX;"
+  },
+  {
+    "id": "builtin-replace",
+    "name": "Replace Text",
+    "category": "Transform",
+    "description": "Replace all occurrences of a string",
+    "code": "const FROM = 'foo';\nconst TO   = 'bar';\nreturn line.split(FROM).join(TO);"
+  },
+  {
+    "id": "builtin-replace-regex",
+    "name": "Replace by Regex",
+    "category": "Transform",
+    "description": "Replace matches of a regex pattern",
+    "code": "return line.replace(/\\s{2,}/g, ' ');"
+  },
+  {
+    "id": "builtin-truncate",
+    "name": "Truncate",
+    "category": "Transform",
+    "description": "Cut line to max N characters",
+    "code": "const MAX = 80;\nreturn line.length > MAX ? line.slice(0, MAX) + '…' : line;"
+  },
+  {
+    "id": "builtin-wrap-quotes",
+    "name": "Wrap in Quotes",
+    "category": "Transform",
+    "description": "Surround the line with double quotes",
+    "code": "return '\"' + line.replace(/\"/g, '\\\\\"') + '\"';"
+  }
+]
