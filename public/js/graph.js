@@ -7,7 +7,7 @@ const Graph = (() => {
 
   // ── State ──────────────────────────────────────
   const state = {
-    nodes: [],       // [{ id, name, code, x, y, isSource, isEnd }]
+    nodes: [],       // [{ id, name, code, x, y, isSource, isEnd, fileId }]
     edges: [],       // [{ id, fromNode, fromPort, toNode, toPort }]
     selected: null,
     nextId: 1,
@@ -26,6 +26,7 @@ const Graph = (() => {
   // ── Utils ────────────────────────────────────────
   function uid() { return 'n' + (state.nextId++); }
   function edgeId() { return 'e' + Date.now() + Math.random().toString(36).slice(2,5); }
+  function fmtBytes(b) { if (!b) return ''; if (b<1024) return b+' B'; if (b<1048576) return (b/1024).toFixed(1)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
 
   /** Convert node name → valid JS identifier */
   function toVarName(name) {
@@ -67,32 +68,77 @@ const Graph = (() => {
     };
   }
 
-  // ── Edge hover dot (HTML div, lives above SVG) ──
+  // ── Bezier point-distance helper ────────────────
+  // Sample N points on cubic bezier, return min distance to (px,py)
+  function distToBezier(px, py, from, to, samples = 40) {
+    const cpy = Math.max(Math.abs(to.y - from.y) * 0.5, 60);
+    const p0 = { x: from.x, y: from.y };
+    const p1 = { x: from.x, y: from.y + cpy };
+    const p2 = { x: to.x,   y: to.y   - cpy };
+    const p3 = { x: to.x,   y: to.y };
+    let minD = Infinity, bestT = 0;
+    for (let i = 0; i <= samples; i++) {
+      const t  = i / samples;
+      const t2 = 1 - t;
+      const x  = t2**3*p0.x + 3*t2**2*t*p1.x + 3*t2*t**2*p2.x + t**3*p3.x;
+      const y  = t2**3*p0.y + 3*t2**2*t*p1.y + 3*t2*t**2*p2.y + t**3*p3.y;
+      const d  = Math.hypot(px - x, py - y);
+      if (d < minD) { minD = d; bestT = t; }
+    }
+    // Return closest point coords too
+    const t = bestT, t2 = 1 - t;
+    return {
+      dist: minD,
+      x: t2**3*p0.x + 3*t2**2*t*p1.x + 3*t2*t**2*p2.x + t**3*p3.x,
+      y: t2**3*p0.y + 3*t2**2*t*p1.y + 3*t2*t**2*p2.y + t**3*p3.y,
+    };
+  }
+
+  // ── Edge hover dot — driven by canvas-wrap mousemove ──
   const edgeDot = (() => {
     const dot = document.createElement('div');
     dot.className = 'edge-dot';
-    dot.title = 'Click to remove · Double-click to insert node';
+    dot.title = 'Click: remove  ·  Double-click: insert node';
     dot.style.display = 'none';
     canvas.parentElement.appendChild(dot);
 
     let activeEdgeId = null;
     let clickTimer   = null;
-    let hideTimer    = null;
 
-    function show(edgeId, x, y) {
-      clearTimeout(hideTimer);
-      activeEdgeId = edgeId;
-      dot.style.left    = x + 'px';
-      dot.style.top     = y + 'px';
-      dot.style.display = 'block';
-    }
+    // Global mousemove on canvas-wrap — always fires regardless of z-index
+    canvas.parentElement.addEventListener('mousemove', (e) => {
+      if (draggingEdge) return; // don't interfere with edge drawing
+      const cRect = canvas.parentElement.getBoundingClientRect();
+      const mx = e.clientX - cRect.left;
+      const my = e.clientY - cRect.top;
 
-    function scheduleHide() {
-      hideTimer = setTimeout(() => { dot.style.display = 'none'; activeEdgeId = null; }, 120);
-    }
+      const THRESHOLD = 14; // px — how close you need to be to the curve
+      let closest = null, closestDist = THRESHOLD;
 
-    dot.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-    dot.addEventListener('mouseleave', scheduleHide);
+      state.edges.forEach(edge => {
+        const from = getPortPos(edge.fromNode, 'out', 0);
+        const to   = getPortPos(edge.toNode,   'in',  edge.toPort || 0);
+        const r    = distToBezier(mx, my, from, to);
+        if (r.dist < closestDist) { closestDist = r.dist; closest = { edge, pt: r }; }
+      });
+
+      if (closest) {
+        activeEdgeId = closest.edge.id;
+        dot.style.left    = closest.pt.x + 'px';
+        dot.style.top     = closest.pt.y + 'px';
+        dot.style.display = 'block';
+        // Highlight corresponding SVG path
+        document.querySelectorAll('.conn-path').forEach(p =>
+          p.classList.toggle('hovered', p.dataset.edge === activeEdgeId));
+      } else {
+        if (activeEdgeId) {
+          document.querySelectorAll('.conn-path').forEach(p => p.classList.remove('hovered'));
+          activeEdgeId = null;
+        }
+        // Only hide if mouse isn't on the dot itself
+        if (e.target !== dot) dot.style.display = 'none';
+      }
+    });
 
     dot.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -101,11 +147,13 @@ const Graph = (() => {
       if (clickTimer) {
         clearTimeout(clickTimer); clickTimer = null;
         dot.style.display = 'none'; activeEdgeId = null;
+        document.querySelectorAll('.conn-path').forEach(p => p.classList.remove('hovered'));
         openLibraryForInsert(eid);
       } else {
         clickTimer = setTimeout(() => {
           clickTimer = null;
           dot.style.display = 'none'; activeEdgeId = null;
+          document.querySelectorAll('.conn-path').forEach(p => p.classList.remove('hovered'));
           removeEdge(eid);
         }, 260);
       }
@@ -115,10 +163,11 @@ const Graph = (() => {
       e.preventDefault(); e.stopPropagation();
       const eid = activeEdgeId;
       dot.style.display = 'none'; activeEdgeId = null;
+      document.querySelectorAll('.conn-path').forEach(p => p.classList.remove('hovered'));
       if (eid) removeEdge(eid);
     });
 
-    return { show, scheduleHide };
+    return {};
   })();
 
   // ── Draw all SVG edges ──────────────────────────
@@ -127,24 +176,10 @@ const Graph = (() => {
     state.edges.forEach(edge => {
       const from = getPortPos(edge.fromNode, 'out', 0);
       const to   = getPortPos(edge.toNode,   'in',  edge.toPort || 0);
-      const d    = bezier(from, to);
-
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('class', 'conn-path');
       path.setAttribute('data-edge', edge.id);
-      path.setAttribute('d', d);
-
-      // Track mouse position along curve → move the HTML dot
-      path.addEventListener('mouseenter', () => path.classList.add('hovered'));
-      path.addEventListener('mouseleave', () => {
-        path.classList.remove('hovered');
-        edgeDot.scheduleHide();
-      });
-      path.addEventListener('mousemove', (e) => {
-        const cRect = canvas.parentElement.getBoundingClientRect();
-        edgeDot.show(edge.id, e.clientX - cRect.left, e.clientY - cRect.top);
-      });
-
+      path.setAttribute('d', bezier(from, to));
       svgGroup.appendChild(path);
     });
     updatePortConnectedState();
@@ -171,15 +206,16 @@ const Graph = (() => {
     const id   = uid();
     const node = {
       id,
-      name:     opts.name     || 'Node',
-      code:     opts.code     || 'return line;\n',
-      x:        opts.x        !== undefined ? opts.x : state.nextPos.x,
-      y:        opts.y        !== undefined ? opts.y : state.nextPos.y,
-      isSource: opts.isSource || false,
-      isEnd:    opts.isEnd    || false,
+      name:        opts.name        || 'Node',
+      code:        opts.code        !== undefined ? opts.code : 'return line;\n',
+      x:           opts.x           !== undefined ? opts.x : state.nextPos.x,
+      y:           opts.y           !== undefined ? opts.y : state.nextPos.y,
+      isSource:    opts.isSource    || false,
+      isEnd:       opts.isEnd       || false,
+      isGenerator: opts.isGenerator || false,
+      fileId:      opts.fileId      || null,
     };
     state.nodes.push(node);
-    // cascade next position
     state.nextPos.x += 260;
     if (state.nextPos.x > 900) { state.nextPos.x = 80; state.nextPos.y += 180; }
     renderNode(node);
@@ -205,8 +241,29 @@ const Graph = (() => {
     if (fromNode === toNode) return;
     // avoid cycles (simple check)
     if (wouldCycle(fromNode, toNode)) return;
+
+    const wasFirstInput = !state.edges.some(e => e.toNode === toNode);
+
     const edge = { id: edgeId(), fromNode, fromPort: 0, toNode, toPort: toPort || 0 };
     state.edges.push(edge);
+
+    // If this is the first connection to toNode, rename `line` → source var name in its code
+    if (wasFirstInput) {
+      const targetNode = state.nodes.find(n => n.id === toNode);
+      const srcNode    = state.nodes.find(n => n.id === fromNode);
+      if (targetNode && srcNode && !targetNode.isEnd && !targetNode.isGenerator) {
+        const varName = toVarName(srcNode.name);
+        if (varName !== 'line') {
+          // Replace whole-word occurrences of `line` with the new var name
+          const updated = targetNode.code.replace(/\bline\b/g, varName);
+          if (updated !== targetNode.code) {
+            targetNode.code = updated;
+            renderNode(targetNode);
+          }
+        }
+      }
+    }
+
     renderEdges();
     App.onGraphChange();
   }
@@ -242,27 +299,85 @@ const Graph = (() => {
     el.style.left = node.x + 'px';
     el.style.top  = node.y + 'px';
 
-    const preview = node.isEnd ? 'collects all incoming results'
-      : (node.code.split('\n').find(l => l.trim() && !l.trim().startsWith('//')) || '').trim().substring(0, 50);
+    const sourceCount = state.nodes.filter(n => n.isSource).length;
+    const canDeleteSource = node.isSource && sourceCount > 1;
 
-    el.innerHTML = `
-      <div class="gnode-ports-in">${node.isSource ? '' : renderInPorts(node)}</div>
-      <div class="gnode-header">
-        <div class="gnode-name">${esc(node.name)}</div>
-        <div class="gnode-btns">
-          ${!node.isEnd ? `<button class="gnode-btn edit">edit</button>` : ''}
-          ${!node.isSource && !node.isEnd ? `<button class="gnode-btn del">✕</button>` : ''}
+    if (node.isGenerator) {
+      const canDelete = state.nodes.filter(n => n.isGenerator || n.isSource).length > 1
+                     || !state.nodes.some(n => n.isSource);
+      el.className = 'gnode node-generator';
+      el.innerHTML = `
+        <div class="gnode-ports-in"></div>
+        <div class="gnode-header">
+          <div class="gnode-name">${esc(node.name)}</div>
+          <div class="gnode-btns">
+            <button class="gnode-btn edit" title="Edit generator code">edit</button>
+            ${canDelete ? `<button class="gnode-btn del" title="Remove generator">✕</button>` : ''}
+          </div>
         </div>
-      </div>
-      <div class="gnode-preview">${esc(preview)}</div>
-      <div class="gnode-ports-out">${node.isEnd ? '' : renderOutPort(node)}</div>
-    `;
+        <div class="gnode-gen-preview" id="genpreview-${node.id}">
+          <span class="gen-preview-loading">…</span>
+        </div>
+        <div class="gnode-ports-out">${renderOutPort(node)}</div>
+      `;
+    } else if (node.isSource) {
+      // SOURCE node — shows file info + upload button
+      const fileInfo = App.getFileInfo(node.fileId);
+      const hasFile  = !!fileInfo;
+      el.innerHTML = `
+        <div class="gnode-ports-in"></div>
+        <div class="gnode-header">
+          <div class="gnode-name">${esc(node.name)}</div>
+          <div class="gnode-btns">
+            ${canDeleteSource ? `<button class="gnode-btn del" title="Remove source">✕</button>` : ''}
+          </div>
+        </div>
+        <div class="gnode-source-body">
+          ${hasFile
+            ? `<div class="source-file-chip">
+                 <span class="source-file-icon">◈</span>
+                 <span class="source-file-name" title="${esc(fileInfo.name)}">${esc(fileInfo.name)}</span>
+                 <span class="source-file-size">${esc(fmtBytes(fileInfo.size))}</span>
+                 <button class="source-file-remove" title="Remove file">✕</button>
+               </div>`
+            : `<div class="source-dropzone" title="Click or drop file to upload">
+                 <span class="source-drop-icon">↑</span>
+                 <span>drop file or <span class="source-browse-link">browse</span></span>
+               </div>`
+          }
+        </div>
+        <div class="gnode-ports-out">${renderOutPort(node)}</div>
+      `;
+    } else if (node.isEnd) {
+      el.innerHTML = `
+        <div class="gnode-ports-in">${renderInPorts(node)}</div>
+        <div class="gnode-header">
+          <div class="gnode-name">${esc(node.name)}</div>
+          <div class="gnode-btns"></div>
+        </div>
+        <div class="gnode-preview">collects all incoming results</div>
+        <div class="gnode-ports-out"></div>
+      `;
+    } else {
+      const preview = (node.code.split('\n').find(l => l.trim() && !l.trim().startsWith('//')) || '').trim().substring(0, 50);
+      el.innerHTML = `
+        <div class="gnode-ports-in">${renderInPorts(node)}</div>
+        <div class="gnode-header">
+          <div class="gnode-name">${esc(node.name)}</div>
+          <div class="gnode-btns">
+            <button class="gnode-btn edit">edit</button>
+            <button class="gnode-btn del">✕</button>
+          </div>
+        </div>
+        <div class="gnode-preview">${esc(preview)}</div>
+        <div class="gnode-ports-out">${renderOutPort(node)}</div>
+      `;
+    }
 
     // drag to move
-    const header = el.querySelector('.gnode-header');
-    header.addEventListener('mousedown', (e) => startNodeDrag(e, node, el));
+    el.querySelector('.gnode-header').addEventListener('mousedown', (e) => startNodeDrag(e, node, el));
 
-    // edit
+    // edit (regular nodes and generators)
     const editBtn = el.querySelector('.gnode-btn.edit');
     if (editBtn) editBtn.addEventListener('click', (e) => { e.stopPropagation(); App.openEditor(node.id); });
 
@@ -270,48 +385,68 @@ const Graph = (() => {
     const delBtn = el.querySelector('.gnode-btn.del');
     if (delBtn) delBtn.addEventListener('click', (e) => { e.stopPropagation(); removeNode(node.id); });
 
-    // port OUT — single mousedown = drag, double-click = open library + auto-connect
+    // GENERATOR: load preview
+    if (node.isGenerator) {
+      fetch('/generator-sample', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: node.code, count: 4 }),
+      }).then(r => r.json()).then(d => {
+        const prev = document.getElementById(`genpreview-${node.id}`);
+        if (!prev) return;
+        if (d.error) { prev.innerHTML = `<span class="gen-preview-err">✗ ${esc(d.error)}</span>`; return; }
+        prev.innerHTML = d.lines.map(l => `<span class="gen-preview-line">${esc(l)}</span>`).join('') +
+          (d.lines.length ? `<span class="gen-preview-more">…</span>` : '');
+      }).catch(() => {});
+    }
+
+    // SOURCE-specific interactions
+    if (node.isSource) {
+      const dropzone = el.querySelector('.source-dropzone');
+      const browseLink = el.querySelector('.source-browse-link');
+      const removeFileBtn = el.querySelector('.source-file-remove');
+
+      if (dropzone) {
+        dropzone.addEventListener('click', () => App.triggerSourceUpload(node.id));
+        if (browseLink) browseLink.addEventListener('click', (e) => { e.stopPropagation(); App.triggerSourceUpload(node.id); });
+        dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+        dropzone.addEventListener('drop', (e) => {
+          e.preventDefault(); dropzone.classList.remove('drag-over');
+          if (e.dataTransfer.files[0]) App.uploadFileForSource(node.id, e.dataTransfer.files[0]);
+        });
+      }
+      if (removeFileBtn) {
+        removeFileBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          App.clearFileForSource(node.id);
+        });
+      }
+    }
+
+    // port OUT
     const outPort = el.querySelector('.port-out');
     if (outPort) {
-      outPort.addEventListener('mousedown', (e) => {
-        e.stopPropagation(); e.preventDefault();
-        startEdgeDrag(e, node.id);
-      });
+      outPort.addEventListener('mousedown', (e) => { e.stopPropagation(); e.preventDefault(); startEdgeDrag(e, node.id); });
       outPort.addEventListener('dblclick', (e) => {
         e.stopPropagation(); e.preventDefault();
-        // Only if this port has no outgoing edges
-        const hasOut = state.edges.some(ed => ed.fromNode === node.id);
-        if (!hasOut) {
-          openLibraryForAutoConnect({ fromNode: node.id, fromPort: 0 });
-        }
+        if (!state.edges.some(ed => ed.fromNode === node.id)) openLibraryForAutoConnect({ fromNode: node.id, fromPort: 0 });
       });
-      // Right-click on OUT port → disconnect all outgoing edges
       outPort.addEventListener('contextmenu', (e) => {
         e.preventDefault(); e.stopPropagation();
         const outEdges = state.edges.filter(ed => ed.fromNode === node.id);
-        if (outEdges.length) {
-          outEdges.forEach(ed => { state.edges = state.edges.filter(x => x.id !== ed.id); });
-          renderEdges(); App.onGraphChange();
-        }
+        if (outEdges.length) { outEdges.forEach(ed => { state.edges = state.edges.filter(x => x.id !== ed.id); }); renderEdges(); App.onGraphChange(); }
       });
     }
 
     // port IN drop target
     el.querySelectorAll('.port-in').forEach((portEl, idx) => {
-      portEl.addEventListener('mouseup', (e) => {
-        e.stopPropagation();
-        if (draggingEdge) { finishEdgeDrag(node.id, idx); }
-      });
+      portEl.addEventListener('mouseup', (e) => { e.stopPropagation(); if (draggingEdge) finishEdgeDrag(node.id, idx); });
       portEl.addEventListener('mouseenter', () => { if (draggingEdge) portEl.classList.add('drop-target'); });
       portEl.addEventListener('mouseleave', () => portEl.classList.remove('drop-target'));
-      // Right-click on IN port → disconnect all incoming edges for this port
       portEl.addEventListener('contextmenu', (e) => {
         e.preventDefault(); e.stopPropagation();
         const inEdges = state.edges.filter(ed => ed.toNode === node.id && (ed.toPort || 0) === idx);
-        if (inEdges.length) {
-          inEdges.forEach(ed => { state.edges = state.edges.filter(x => x.id !== ed.id); });
-          renderEdges(); App.onGraphChange();
-        }
+        if (inEdges.length) { inEdges.forEach(ed => { state.edges = state.edges.filter(x => x.id !== ed.id); }); renderEdges(); App.onGraphChange(); }
       });
     });
 
@@ -411,9 +546,7 @@ const Graph = (() => {
     });
     menu.appendChild(dup);
 
-    if (!node.isSource && !node.isEnd) {
-      menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
-      const del = document.createElement('div');
+    if (!node.isSource && !node.isEnd && !node.isGenerator) {
       del.className = 'ctx-item danger';
       del.innerHTML = '<span>✕</span> Delete node';
       del.addEventListener('click', () => { removeCtxMenu(); removeNode(node.id); });
@@ -430,7 +563,7 @@ const Graph = (() => {
 
   // ── Update hint visibility ──────────────────────
   function updateHint() {
-    const userNodes = state.nodes.filter(n => !n.isSource && !n.isEnd);
+    const userNodes = state.nodes.filter(n => !n.isSource && !n.isEnd && !n.isGenerator);
     hint.classList.toggle('hidden', userNodes.length > 0);
   }
 
@@ -554,6 +687,7 @@ const Graph = (() => {
     updateNode,
     renderAll,
     renderEdges,
+    renderNode,
     topoSort,
     getInputVarNames,
     toVarName,

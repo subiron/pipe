@@ -15,23 +15,13 @@
         <div class="logo"><span class="logo-mark">▶</span><span class="logo-text">PIPE</span></div>
         <div class="tagline">node graph file transformer</div>
       </div>
-      <div class="header-center" id="file-zone">
-        <div id="dropzone" class="dropzone-inline">
-          <span class="drop-icon-sm">◈</span>
-          <span id="drop-label">Drop file or <label for="file-input" class="file-label-inline">browse</label></span>
-          <input type="file" id="file-input" hidden>
-        </div>
-        <div id="file-chip" class="file-chip hidden">
-          <span class="file-chip-icon">◈</span>
-          <span id="file-chip-name"></span>
-          <span id="file-chip-size" class="file-chip-size"></span>
-          <button id="file-remove" class="file-chip-remove">✕</button>
-        </div>
-      </div>
+      <div class="header-center" id="header-center"></div>
       <div class="header-right">
         <button id="btn-workspaces" class="btn btn-ghost"><span>◫</span><span>Workspaces</span></button>
         <button id="btn-save-workspace" class="btn btn-ws"><span>⊙</span><span>Save</span></button>
+        <button id="btn-clear" class="btn btn-clear" title="Clear canvas and file from memory">✕ Clear</button>
         <div class="header-sep"></div>
+        <button id="btn-add-source" class="btn btn-add-source"><span>◈</span><span>Add Source</span></button>
         <button id="btn-add-node" class="btn btn-add-node"><span>+</span><span>Add Node</span></button>
         <div class="header-sep"></div>
         <button id="btn-run" class="btn btn-run" disabled><span class="btn-icon">▶</span><span>Run</span></button>
@@ -47,7 +37,6 @@
           <div>Connect any node to <span class="end-hint">END</span> to collect results</div>
         </div>
       </div>
-      <div id="canvas" tabindex="0"></div>
       <svg id="svg-connections">
         <defs>
           <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
@@ -57,6 +46,7 @@
         <g id="connections-group"></g>
         <path id="drag-edge" d="" fill="none" stroke="#e8ff47" stroke-width="2" stroke-dasharray="6 4" opacity="0" pointer-events="none"/>
       </svg>
+      <div id="canvas" tabindex="0"></div>
     </div>
 
     <div id="bottom-panel" class="hidden">
@@ -151,6 +141,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Hidden shared file input -->
+  <input type="file" id="source-file-input" hidden>
 
   <script src="js/graph.js"></script>
   <script src="js/executor.js"></script>

@@ -76,9 +76,27 @@ app.get('/random-line/:fileId', async (req,res) => {
 });
 
 app.post('/sample-line/:fileId', async (req,res) => {
+  const nodes = Array.isArray(req.body.nodes) ? req.body.nodes : [];
+
+  // Special case: line passed directly (used by generator test sampling)
+  if (req.params.fileId === '__generator__') {
+    const raw = req.body.line;
+    if (!raw || !nodes.length) return res.json({ line: raw || null, dropped: !raw });
+    let value = raw;
+    const ctx = {};
+    for (let i = 0; i < nodes.length; i++) {
+      try {
+        const fn = new Function('line','lineNumber',`"use strict";\n${nodes[i].code}`);
+        const r  = fn.call(ctx, value, 1);
+        if (r === null || r === undefined) return res.json({ line: null, dropped: true, droppedAt: i });
+        value = String(r);
+      } catch(err) { return res.json({ line: null, dropped: true, droppedAt: i, error: err.message }); }
+    }
+    return res.json({ line: value, dropped: false });
+  }
+
   const fp = path.join('uploads', req.params.fileId);
   if (!fs.existsSync(fp)) return res.status(404).json({error:'Not found'});
-  const nodes = Array.isArray(req.body.nodes) ? req.body.nodes : [];
   const raw = await reservoirLine(fp);
   if (!nodes.length) return res.json({ line:raw, dropped:false });
   let value = raw;
@@ -99,6 +117,29 @@ app.get('/download/:fileId', (req,res) => {
   const out = path.join('uploads', req.params.fileId+'.output.txt');
   if (!fs.existsSync(out)) return res.status(404).json({error:'Not found'});
   res.download(out, 'output.txt');
+});
+
+/* ── Generator sample (first few lines) ─────── */
+app.post('/generator-sample', (req, res) => {
+  const { code, count = 5 } = req.body;
+  if (!code) return res.json({ lines: [] });
+  try {
+    const iter = new Function(`"use strict";\nreturn (function*() {\n${code}\n})();`)();
+    const lines = [];
+    for (const val of iter) {
+      lines.push(String(val));
+      if (lines.length >= count) break;
+    }
+    res.json({ lines });
+  } catch(err) {
+    res.json({ lines: [], error: err.message });
+  }
+});
+
+/* ── File exists check ───────────────────────── */
+app.get('/file-exists/:fileId', (req,res) => {
+  const fp = path.join('uploads', req.params.fileId);
+  res.json({ exists: fs.existsSync(fp) });
 });
 
 /* ════════════════════════════════════════════════
@@ -141,95 +182,126 @@ function getInputVarNames(nodeId, nodes, edges) {
   });
 }
 
-async function processGraph(filePath, nodes, edges, ws) {
-  const order    = topoSort(nodes, edges);
-  const sourceNode = nodes.find(n=>n.isSource);
-  const endNode    = nodes.find(n=>n.isEnd);
-  if (!sourceNode||!endNode) { ws.send(JSON.stringify({type:'error',message:'Graph needs SOURCE and END nodes'})); return; }
+async function processGraph(nodes, edges, ws) {
+  const sourceNodes    = nodes.filter(n => n.isSource);
+  const generatorNodes = nodes.filter(n => n.isGenerator);
+  const endNode        = nodes.find(n => n.isEnd);
 
-  // Pre-compile all node functions
+  if (!endNode) {
+    ws.send(JSON.stringify({ type:'error', message:'Graph needs an END node' })); return;
+  }
+  if (!sourceNodes.length && !generatorNodes.length) {
+    ws.send(JSON.stringify({ type:'error', message:'Graph needs at least one SOURCE or GENERATOR node' })); return;
+  }
+
+  // Validate source files
+  for (const src of sourceNodes) {
+    const fp = path.join('uploads', src.fileId || '');
+    if (!src.fileId || !fs.existsSync(fp)) {
+      ws.send(JSON.stringify({ type:'error', message:`Source "${src.name}" has no file loaded` })); return;
+    }
+  }
+
+  // Pre-compile generator functions (must be generator functions using yield)
+  const genFns = {};
+  for (const node of generatorNodes) {
+    try {
+      genFns[node.id] = new Function(`"use strict";\nreturn (function*() {\n${node.code}\n})();`);
+    } catch(err) {
+      ws.send(JSON.stringify({ type:'error', message:`Syntax error in generator "${node.name}": ${err.message}` })); return;
+    }
+  }
+
+  // Pre-compile regular node functions
   const fns = {};
   for (const node of nodes) {
-    if (node.isSource||node.isEnd) continue;
+    if (node.isSource || node.isEnd || node.isGenerator) continue;
     try {
       const varNames = getInputVarNames(node.id, nodes, edges);
       const args = varNames.length ? [...varNames,'lineNumber'] : ['line','lineNumber'];
-      fns[node.id] = { fn: new Function(...args, `"use strict";\n${node.code}`), args, varNames };
+      fns[node.id] = { fn: new Function(...args, `"use strict";\n${node.code}`), varNames };
     } catch(err) {
-      ws.send(JSON.stringify({type:'error',message:`Syntax error in node "${node.name}": ${err.message}`})); return;
+      ws.send(JSON.stringify({ type:'error', message:`Syntax error in "${node.name}": ${err.message}` })); return;
     }
   }
 
-  const rl = readline.createInterface({ input:fs.createReadStream(filePath), crlfDelay:Infinity });
-  let lineNumber=0, processedCount=0, errorCount=0;
-  const results=[];
-  // Per-node stateful context (for deduplicate etc)
   const ctxs = {};
-  nodes.forEach(n=>{ ctxs[n.id]={}; });
+  nodes.forEach(n => { ctxs[n.id] = {}; });
 
-  for await (const rawLine of rl) {
-    lineNumber++;
-    // values[nodeId] = string output | null (dropped) | undefined (not yet computed)
-    const values = {};
-    values[sourceNode.id] = rawLine; // SOURCE passes raw line through
+  let totalLines = 0, processedCount = 0, errorCount = 0;
+  const results = [];
 
-    let dropped = false;
-    let errored = false;
-
-    // Process in topo order
-    for (const nodeId of order) {
-      const node = nodes.find(n=>n.id===nodeId);
-      if (!node||node.isSource) continue;
-      if (node.isEnd) {
-        // Collect all inputs; if any is non-null, add to results
-        const incoming = edges.filter(e=>e.toNode===nodeId);
-        for (const edge of incoming) {
-          const v = values[edge.fromNode];
-          if (v!==null && v!==undefined) { results.push(String(v)); processedCount++; }
-        }
-        continue;
-      }
-
-      // Get input values for this node
-      const incoming = edges.filter(e=>e.toNode===nodeId);
-      if (!incoming.length) continue; // unconnected node, skip
-
-      // Check if any input was dropped — if ALL inputs are null, skip node
-      const inputVals = incoming.map(e=>values[e.fromNode]);
-      if (inputVals.every(v=>v===null||v===undefined)) {
-        values[nodeId] = null; continue;
-      }
-
-      const compiled = fns[nodeId];
-      if (!compiled) continue;
-
-      try {
-        let argValues;
-        if (compiled.varNames.length === 0) {
-          // source-connected node with just 'line'
-          argValues = [inputVals[0] ?? '', lineNumber];
-        } else {
-          argValues = [...compiled.varNames.map((_,i)=> inputVals[i] ?? ''), lineNumber];
-        }
-        const result = compiled.fn.call(ctxs[nodeId], ...argValues);
-        values[nodeId] = (result===null||result===undefined) ? null : String(result);
-        if (values[nodeId]===null) dropped=true;
-      } catch(err) {
-        values[nodeId] = null; errored=true; errorCount++;
-      }
+  // Helper: process a single "root" node (source or generator) through its subgraph
+  async function processSubgraph(rootNodeId, lineIterator) {
+    const reachable = new Set();
+    const stack = [rootNodeId];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (reachable.has(cur)) continue;
+      reachable.add(cur);
+      edges.filter(e => e.fromNode === cur).forEach(e => stack.push(e.toNode));
     }
+    const subNodes = nodes.filter(n => reachable.has(n.id));
+    const order    = topoSort(subNodes, edges.filter(e => reachable.has(e.fromNode) && reachable.has(e.toNode)));
+    let lineNumber = 0;
 
-    if (lineNumber%100===0||lineNumber<=50) {
-      ws.send(JSON.stringify({type:'progress',lineNumber,processedCount,errorCount}));
+    for await (const rawLine of lineIterator) {
+      lineNumber++; totalLines++;
+      const values = { [rootNodeId]: rawLine };
+
+      for (const nodeId of order) {
+        const node = subNodes.find(n => n.id === nodeId);
+        if (!node || node.isSource || node.isGenerator) continue;
+        if (node.isEnd) {
+          const incoming = edges.filter(e => e.toNode === nodeId && reachable.has(e.fromNode));
+          for (const edge of incoming) {
+            const v = values[edge.fromNode];
+            if (v !== null && v !== undefined) { results.push(String(v)); processedCount++; }
+          }
+          continue;
+        }
+        const incoming = edges.filter(e => e.toNode === nodeId && reachable.has(e.fromNode));
+        if (!incoming.length) continue;
+        const inputVals = incoming.map(e => values[e.fromNode]);
+        if (inputVals.every(v => v === null || v === undefined)) { values[nodeId] = null; continue; }
+        const compiled = fns[nodeId];
+        if (!compiled) continue;
+        try {
+          const argValues = compiled.varNames.length
+            ? [...compiled.varNames.map((_, i) => inputVals[i] ?? ''), lineNumber]
+            : [inputVals[0] ?? '', lineNumber];
+          const result = compiled.fn.call(ctxs[nodeId], ...argValues);
+          values[nodeId] = (result === null || result === undefined) ? null : String(result);
+        } catch { values[nodeId] = null; errorCount++; }
+      }
+
+      if (totalLines % 200 === 0) {
+        ws.send(JSON.stringify({ type:'progress', lineNumber: totalLines, processedCount, errorCount }));
+      }
     }
   }
 
-  const outputPath = filePath+'.output.txt';
+  // Process FILE sources
+  for (const srcNode of sourceNodes) {
+    const filePath = path.join('uploads', srcNode.fileId);
+    const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+    await processSubgraph(srcNode.id, rl);
+  }
+
+  // Process GENERATOR nodes
+  for (const genNode of generatorNodes) {
+    async function* genIterator() {
+      const iter = genFns[genNode.id]();
+      for (const val of iter) yield String(val);
+    }
+    await processSubgraph(genNode.id, genIterator());
+  }
+
+  // Write output
+  const firstRootId = (sourceNodes[0] || generatorNodes[0])?.fileId || ('gen-' + Date.now());
+  const outputPath = path.join('uploads', (sourceNodes[0]?.fileId || 'generator') + '.output.txt');
   fs.writeFileSync(outputPath, results.join('\n'));
-  ws.send(JSON.stringify({
-    type:'complete', totalLines:lineNumber, processedCount, errorCount,
-    results:results.slice(0,1000),
-  }));
+  ws.send(JSON.stringify({ type:'complete', totalLines, processedCount, errorCount, results: results.slice(0, 1000) }));
 }
 
 /* ── WebSocket ───────────────────────────────── */
@@ -237,12 +309,10 @@ wss.on('connection', (ws) => {
   ws.on('message', async (data) => {
     try {
       const msg = JSON.parse(data);
-      if (msg.type==='process') {
-        const fp = path.join('uploads', msg.fileId);
-        if (!fs.existsSync(fp)) { ws.send(JSON.stringify({type:'error',message:'File not found'})); return; }
-        await processGraph(fp, msg.nodes, msg.edges, ws);
+      if (msg.type === 'process') {
+        await processGraph(msg.nodes, msg.edges, ws);
       }
-    } catch(err) { ws.send(JSON.stringify({type:'error',message:err.message})); }
+    } catch(err) { ws.send(JSON.stringify({ type:'error', message: err.message })); }
   });
 });
 

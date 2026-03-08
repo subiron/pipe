@@ -1,5 +1,21 @@
 [
   {
+    "id": "builtin-file-source",
+    "name": "File line source",
+    "category": "Source",
+    "description": "Read lines from an uploaded file, one line at a time",
+    "code": "",
+    "isSource": true
+  },
+  {
+    "id": "builtin-generator",
+    "name": "Generator",
+    "category": "Source",
+    "description": "Generate lines programmatically. Default: integers 0–1000",
+    "code": "const COUNT = 1001;\nfor (let i = 0; i < COUNT; i++) yield String(i);",
+    "isGenerator": true
+  },
+  {
     "id": "builtin-trim",
     "name": "Trim Whitespace",
     "category": "Text",

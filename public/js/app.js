@@ -5,88 +5,158 @@
 const App = (() => {
 
   const appState = {
-    fileId:    null,
+    files:     {},   // { fileId: { name, size } } — all known uploaded files
     library:   [],
     libFilter: 'All',
     libSearch: '',
     workspaces: [],
     editingId: null,
     processing: false,
-    lastFileId: null,
+    lastOutputFileId: null,
   };
+
+  /* ── LOCAL STORAGE AUTO-SAVE ───────────────── */
+  const LS_KEY      = 'pipe_autosave';
+  const LS_FILES_KEY = 'pipe_files'; // { fileId: { name, size } }
+
+  function saveToLS() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(Graph.serialise())); } catch {}
+  }
+
+  function saveFilesToLS() {
+    try { localStorage.setItem(LS_FILES_KEY, JSON.stringify(appState.files)); } catch {}
+  }
+
+  function loadFromLS() {
+    try { const r = localStorage.getItem(LS_KEY); return r ? JSON.parse(r) : null; } catch { return null; }
+  }
+
+  function loadFilesFromLS() {
+    try { const r = localStorage.getItem(LS_FILES_KEY); return r ? JSON.parse(r) : {}; } catch { return {}; }
+  }
+
+  // Called by graph.js to get file info for a SOURCE node
+  function getFileInfo(fileId) {
+    if (!fileId) return null;
+    return appState.files[fileId] || null;
+  }
 
   /* ── INIT ───────────────────────────────────── */
   async function init() {
     Executor.connect();
     await Promise.all([loadLibrary(), loadWorkspaces()]);
-    // Create SOURCE + END nodes on first load
-    Graph.addNode({ name: 'SOURCE', code: 'return line;', x: 80,  y: 140, isSource: true });
-    Graph.addNode({ name: 'END',    code: '',              x: 660, y: 140, isEnd: true });
-    Graph.renderEdges();
+
+    // Restore known files, verify each still exists on server
+    const savedFiles = loadFilesFromLS();
+    for (const [fileId, info] of Object.entries(savedFiles)) {
+      try {
+        const r = await fetch(`/file-exists/${fileId}`).then(r => r.json());
+        if (r.exists) appState.files[fileId] = info;
+      } catch {}
+    }
+    saveFilesToLS(); // prune missing files
+
+    // Restore graph
+    const saved = loadFromLS();
+    if (saved && saved.nodes && saved.nodes.length) {
+      Graph.deserialise(saved);
+    } else {
+      Graph.addNode({ name: 'SOURCE', code: 'return line;', x: 80,  y: 140, isSource: true });
+      Graph.addNode({ name: 'END',    code: '',              x: 660, y: 140, isEnd: true });
+      Graph.renderEdges();
+    }
+    updateRunBtn();
   }
 
-  /* ── FILE UPLOAD ───────────────────────────── */
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('file-input');
-  const fileChip  = document.getElementById('file-chip');
-
-  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
-  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
-  dropzone.addEventListener('drop', (e) => { e.preventDefault(); dropzone.classList.remove('drag-over'); if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]); });
-  dropzone.addEventListener('click', (e) => {
-    // Don't trigger if the click came from the <label> — it already handles fileInput natively
-    if (e.target.tagName === 'LABEL') return;
-    fileInput.click();
-  });
-  fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
-  document.getElementById('file-remove').addEventListener('click', (e) => { e.stopPropagation(); clearFile(); });
-
-  async function uploadFile(file) {
-    const fd = new FormData(); fd.append('file', file);
-    document.getElementById('file-chip-name').textContent = file.name;
-    document.getElementById('file-chip-size').textContent = '';
-    dropzone.classList.add('hidden'); fileChip.classList.remove('hidden');
-    try {
-      const d = await fetch('/upload', { method:'POST', body:fd }).then(r => r.json());
-      appState.fileId = d.fileId;
-      document.getElementById('file-chip-name').textContent = d.originalName;
-      document.getElementById('file-chip-size').textContent = fmtBytes(d.size);
-      updateRunBtn();
-    } catch { document.getElementById('file-chip-size').textContent = 'upload failed'; }
-  }
-
-  function clearFile() {
-    appState.fileId = null; fileInput.value = '';
-    dropzone.classList.remove('hidden'); fileChip.classList.add('hidden');
-    updateRunBtn(); clearOutput();
-  }
-
+  /* ── FILE UPLOAD (per SOURCE node) ─────────── */
   function fmtBytes(b) {
     if (b < 1024) return b+' B';
     if (b < 1048576) return (b/1024).toFixed(1)+' KB';
     return (b/1048576).toFixed(1)+' MB';
   }
 
-  /* ── GRAPH CHANGE HOOK ─────────────────────── */
-  function onGraphChange() { updateRunBtn(); }
+  // Hidden file inputs keyed by nodeId
+  const _fileInputs = {};
+
+  function triggerSourceUpload(nodeId) {
+    if (!_fileInputs[nodeId]) {
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.style.display = 'none';
+      inp.addEventListener('change', () => { if (inp.files[0]) uploadFileForSource(nodeId, inp.files[0]); });
+      document.body.appendChild(inp);
+      _fileInputs[nodeId] = inp;
+    }
+    _fileInputs[nodeId].click();
+  }
+
+  async function uploadFileForSource(nodeId, file) {
+    const node = Graph.state.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const body = document.querySelector(`.gnode[data-id="${nodeId}"] .gnode-source-body`);
+    if (body) body.innerHTML = `<div class="source-uploading"><span class="source-spin">◌</span> uploading…</div>`;
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      const d  = await fetch('/upload', { method:'POST', body:fd }).then(r => r.json());
+      appState.files[d.fileId] = { name: d.originalName, size: d.size };
+      saveFilesToLS();
+      // Update node name to filename (without extension) if still default
+      const newName = (node.name === 'SOURCE' || node.name === node.fileId) ? d.originalName.replace(/\.[^.]+$/, '') : node.name;
+      Graph.updateNode(nodeId, { fileId: d.fileId, name: newName });
+      onGraphChange();
+    } catch {
+      if (body) body.innerHTML = `<div class="source-upload-err">✗ upload failed</div>`;
+    }
+  }
+
+  function clearFileForSource(nodeId) {
+    Graph.updateNode(nodeId, { fileId: null });
+    onGraphChange();
+  }
+
+  // Called by graph.js to get file info for a SOURCE node display
+  function getFileInfo(fileId) {
+    if (!fileId) return null;
+    return appState.files[fileId] || null;
+  }
+
+  // Legacy alias — kept for compatibility
+  function bindSourceUpload() {}
+
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    if (!confirm('Clear canvas and forget all uploaded files?')) return;
+    try { localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_FILES_KEY); } catch {}
+    appState.files = {};
+    Graph.state.nodes = [];
+    Graph.state.edges = [];
+    Graph.state.nextId = 1;
+    Graph.state.nextPos = { x: 80, y: 80 };
+    Graph.addNode({ name: 'SOURCE', code: 'return line;', x: 80,  y: 140, isSource: true });
+    Graph.addNode({ name: 'END',    code: '',              x: 660, y: 140, isEnd: true });
+    Graph.renderAll();
+    clearOutput();
+    document.getElementById('bottom-panel').classList.add('hidden');
+  });
+
+
+  function onGraphChange() { updateRunBtn(); saveToLS(); }
 
   /* ── RUN BUTTON ────────────────────────────── */
   function updateRunBtn() {
     const { nodes, edges } = Graph.state;
-    const hasEnd  = nodes.some(n => n.isEnd);
-    const hasPath = edges.some(e => {
-      const to = nodes.find(n => n.id === e.toNode);
-      return to && to.isEnd;
-    });
+    const sourceNodes    = nodes.filter(n => n.isSource);
+    const generatorNodes = nodes.filter(n => n.isGenerator);
+    const allSourcesHaveFiles = sourceNodes.every(n => n.fileId && appState.files[n.fileId]);
+    const hasAnyRoot = (sourceNodes.length + generatorNodes.length) > 0;
+    const hasPath = edges.some(e => { const t = nodes.find(n => n.id === e.toNode); return t && t.isEnd; });
     const btn = document.getElementById('btn-run');
-    btn.disabled = !appState.fileId || !hasPath || appState.processing;
+    btn.disabled = !hasAnyRoot || !allSourcesHaveFiles || !hasPath || appState.processing;
   }
 
   document.getElementById('btn-run').addEventListener('click', runPipeline);
 
   function runPipeline() {
     if (appState.processing) return;
-    appState.processing = true; appState.lastFileId = appState.fileId;
+    appState.processing = true;
     clearOutput();
     const panel = document.getElementById('bottom-panel');
     panel.classList.remove('hidden', 'collapsed');
@@ -95,7 +165,10 @@ const App = (() => {
     const btn = document.getElementById('btn-run');
     btn.classList.add('running'); btn.querySelector('span:last-child').textContent = 'Running…'; btn.disabled = true;
     document.getElementById('btn-download').disabled = true;
-    Executor.run(appState.fileId);
+    // Pass the first SOURCE node's fileId for output naming; executor handles multi-source
+    const firstSource = Graph.state.nodes.find(n => n.isSource);
+    appState.lastOutputFileId = firstSource ? firstSource.fileId : null;
+    Executor.run();
   }
 
   function onWsMessage(msg) {
@@ -157,11 +230,20 @@ const App = (() => {
   });
 
   document.getElementById('btn-download').addEventListener('click', () => {
-    if (appState.lastFileId) window.open(`/download/${appState.lastFileId}`, '_blank');
+    if (appState.lastOutputFileId) window.open(`/download/${appState.lastOutputFileId}`, '_blank');
   });
 
-  /* ── ADD NODE ──────────────────────────────── */
+  /* ── ADD NODE / ADD SOURCE ──────────────────── */
   document.getElementById('btn-add-node').addEventListener('click', openLibrary);
+  document.getElementById('btn-add-source').addEventListener('click', () => {
+    const sources = Graph.state.nodes.filter(n => n.isSource);
+    const lastSrc = sources[sources.length - 1];
+    Graph.addNode({ name: 'SOURCE', code: 'return line;', isSource: true,
+      x: lastSrc ? lastSrc.x : 80,
+      y: lastSrc ? lastSrc.y + 160 : 140,
+    });
+    onGraphChange();
+  });
 
   /* ── NODE EDITOR ────────────────────────────── */
   const modalOverlay = document.getElementById('modal-overlay');
@@ -256,12 +338,20 @@ const App = (() => {
       row.querySelector('.test-input-field').addEventListener('input', debounceTest);
       wrap.appendChild(row);
 
-      if (appState.fileId) {
+      // Populate with a random sample — find nearest source with file
+      const found = getPathToNode(node.id);
+      if (found) {
         const field = row.querySelector('.test-input-field');
         field.placeholder = 'Loading sample…';
         try {
-          const d = await fetch(`/random-line/${appState.fileId}`).then(r => r.json());
-          if (d.line) { field.value = d.line; field.placeholder = ''; runTest(); }
+          const pathNodes = found.path.filter(n => !n.isSource && !n.isEnd && !n.isGenerator);
+          let result;
+          if (pathNodes.length === 0) {
+            result = await sampleThroughNodes([], found.sourceNode);
+          } else {
+            result = await sampleThroughNodes(pathNodes, found.sourceNode);
+          }
+          if (result && !result.dropped && result.line) { field.value = result.line; field.placeholder = ''; runTest(); }
         } catch {}
         field.placeholder = field.value ? '' : 'Test input line…';
       }
@@ -286,67 +376,92 @@ const App = (() => {
       wrap.appendChild(btnRow);
 
       // Populate each input with sample from its source chain
-      if (appState.fileId) {
-        for (let i = 0; i < incoming.length; i++) {
-          const edge = incoming[i];
-          const field = wrap.querySelectorAll('.test-input-field')[i];
-          if (!field) continue;
-          field.placeholder = 'Loading sample…';
-          try {
-            // Collect the path from SOURCE to this input's source node
-            const pathNodes = getPathToNode(edge.fromNode);
-            let result;
-            if (pathNodes.length === 0) {
-              result = await fetch(`/random-line/${appState.fileId}`).then(r => r.json());
-            } else {
-              result = await sampleThroughNodes(pathNodes);
-            }
-            if (result && !result.dropped && result.line) {
-              field.value = result.line;
-              field.placeholder = '';
-            } else {
-              field.placeholder = 'No passing sample found';
-            }
-          } catch { field.placeholder = '…'; }
-        }
-        if (hasTestValues()) runTest();
+      for (let i = 0; i < incoming.length; i++) {
+        const edge  = incoming[i];
+        const field = wrap.querySelectorAll('.test-input-field')[i];
+        if (!field) continue;
+        field.placeholder = 'Loading sample…';
+        try {
+          const found = getPathToNode(edge.fromNode);
+          if (!found) { field.placeholder = 'no source'; continue; }
+          const pathNodes = found.path.filter(n => !n.isSource && !n.isEnd && !n.isGenerator);
+          const result = await sampleThroughNodes(pathNodes, found.sourceNode);
+          if (result && !result.dropped && result.line) {
+            field.value = result.line;
+            field.placeholder = '';
+          } else {
+            field.placeholder = 'No passing sample found';
+          }
+        } catch { field.placeholder = '…'; }
       }
+      if (hasTestValues()) runTest();
     }
   }
 
   function getPathToNode(targetId) {
-    // BFS to find one path from source to targetId, returns ordered node codes
     const { nodes, edges } = Graph.state;
-    const source = nodes.find(n => n.isSource);
-    if (!source) return [];
-    if (source.id === targetId) return [];
+    // Treat generators as roots too (they don't need a fileId)
+    const roots = nodes.filter(n => (n.isSource && n.fileId) || n.isGenerator);
+    if (!roots.length) return null;
 
-    // BFS
-    const queue = [[source.id]];
-    const visited = new Set();
-    while (queue.length) {
-      const path = queue.shift();
-      const cur = path[path.length - 1];
-      if (cur === targetId) {
-        // return nodes in path except the last (we want preceding nodes)
-        return path.slice(0, -1).map(id => nodes.find(n => n.id === id)).filter(Boolean);
+    for (const root of roots) {
+      if (root.id === targetId) return { sourceNode: root, path: [] };
+      const queue = [[root.id]];
+      const visited = new Set();
+      while (queue.length) {
+        const path = queue.shift();
+        const cur = path[path.length - 1];
+        if (cur === targetId) {
+          return {
+            sourceNode: root,
+            path: path.slice(0, -1).map(id => nodes.find(n => n.id === id)).filter(Boolean),
+          };
+        }
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        edges.filter(e => e.fromNode === cur).forEach(e => queue.push([...path, e.toNode]));
       }
-      if (visited.has(cur)) continue;
-      visited.add(cur);
-      edges.filter(e => e.fromNode === cur).forEach(e => queue.push([...path, e.toNode]));
     }
-    return [];
+    return null;
   }
 
-  async function sampleThroughNodes(nodeList) {
-    if (!appState.fileId) return null;
-    const codes = nodeList.filter(n => !n.isSource && !n.isEnd).map(n => ({ code: n.code }));
+  async function sampleThroughNodes(nodeList, sourceNode) {
+    // sourceNode can be a file source or a generator
+    async function getRawLine() {
+      if (sourceNode.isGenerator) {
+        const d = await fetch('/generator-sample', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: sourceNode.code, count: 1 }),
+        }).then(r => r.json());
+        return d.lines?.[0] ?? null;
+      }
+      const d = await fetch(`/random-line/${sourceNode.fileId}`).then(r => r.json());
+      return d.line ?? null;
+    }
+
+    if (!nodeList.length) {
+      const line = await getRawLine();
+      return line !== null ? { line, dropped: false } : null;
+    }
+
+    const codes = nodeList.filter(n => !n.isSource && !n.isEnd && !n.isGenerator).map(n => ({ code: n.code }));
     for (let attempt = 0; attempt < 8; attempt++) {
-      const res = await fetch(`/sample-line/${appState.fileId}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodes: codes }),
-      }).then(r => r.json());
-      if (!res.dropped) return res;
+      if (sourceNode.isGenerator) {
+        const rawLine = await getRawLine();
+        if (!rawLine) return null;
+        if (!codes.length) return { line: rawLine, dropped: false };
+        const res = await fetch(`/sample-line/__generator__`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodes: codes, line: rawLine }),
+        }).then(r => r.json()).catch(() => ({ dropped: true }));
+        if (!res.dropped) return res;
+      } else {
+        const res = await fetch(`/sample-line/${sourceNode.fileId}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodes: codes }),
+        }).then(r => r.json());
+        if (!res.dropped) return res;
+      }
     }
     return { dropped: true };
   }
@@ -397,12 +512,11 @@ const App = (() => {
     Graph.updateNode(appState.editingId, { name, code });
     closeModal();
     onGraphChange();
-    // Auto-run after saving if file loaded and graph has a path to END
-    if (appState.fileId && !appState.processing) {
-      const { nodes, edges } = Graph.state;
-      const hasPath = edges.some(e => { const t = nodes.find(n => n.id === e.toNode); return t && t.isEnd; });
-      if (hasPath) runPipeline();
-    }
+    // Auto-run after saving if there are sources and graph has a path to END
+    const { nodes, edges } = Graph.state;
+    const hasSources = nodes.some(n => (n.isSource && n.fileId) || n.isGenerator);
+    const hasPath = edges.some(e => { const t = nodes.find(n => n.id === e.toNode); return t && t.isEnd; });
+    if (hasSources && hasPath && !appState.processing) runPipeline();
   }
 
   /* ── SAVE TO LIBRARY ────────────────────────── */
@@ -478,13 +592,16 @@ const App = (() => {
       card.addEventListener('click', (e) => {
         if (e.target.closest('.lib-card-btn')) return;
         closeLibrary();
-        const node = Graph.addNode({ name: entry.name, code: entry.code });
-        if (_libraryMode === 'graph') {
+        // Source types spawn their own special node types
+        const nodeOpts = { name: entry.name, code: entry.code || '' };
+        if (entry.isSource)    nodeOpts.isSource    = true;
+        if (entry.isGenerator) nodeOpts.isGenerator = true;
+        if (!entry.isSource && !entry.isGenerator && !entry.code) nodeOpts.code = 'return line;\n';
+        const node = Graph.addNode(nodeOpts);
+        if (_libraryMode === 'graph' && !entry.isSource && !entry.isGenerator) {
           Graph.applyPendingConnect(node);
-          openEditor(node.id);
-        } else {
-          openEditor(node.id);
         }
+        if (!entry.isSource) openEditor(node.id);
       });
       if (!isBuiltin) {
         card.querySelector('.del-lib').addEventListener('click', async (e) => {
@@ -588,7 +705,7 @@ const App = (() => {
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
   /* ── PUBLIC ─────────────────────────────────── */
-  return { init, openEditor, onGraphChange, onWsMessage, openLibraryForGraph };
+  return { init, openEditor, onGraphChange, onWsMessage, openLibraryForGraph, getFileInfo, bindSourceUpload, triggerSourceUpload, uploadFileForSource, clearFileForSource, updateRunBtn };
 })();
 
 App.init();

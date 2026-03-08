@@ -91,6 +91,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
 .btn-download:not(:disabled):hover { background:var(--bg4); }
 .btn-ws { border-color:var(--accent2); color:var(--accent2); }
 .btn-ws:hover { background:rgba(71,198,255,.08); }
+.btn-clear { border-color:var(--border); color:var(--textM); }
+.btn-clear:hover { border-color:var(--err); color:var(--err); background:rgba(248,113,113,.06); }
+.btn-add-source { border-color:var(--accent2); color:var(--accent2); }
+.btn-add-source:hover { background:rgba(71,198,255,.08); }
 .btn-add-node { border-color:var(--accent); color:var(--accent); }
 .btn-add-node:hover { background:rgba(232,255,71,.07); }
 .btn-save { border-color:var(--accent); background:var(--accent); color:var(--bg); }
@@ -129,9 +133,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
 
 #svg-connections {
   position:absolute; inset:0; width:100%; height:100%;
-  overflow:visible;
-  /* No pointer-events:none here — children need to receive mousemove.
-     Empty SVG background passes clicks through because fill is none. */
+  pointer-events:none; overflow:visible; z-index:5;
 }
 
 #canvas {
@@ -210,7 +212,52 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
   top:16px; left:50%; transform:translateX(-50%);
 }
 
-/* ── CONNECTIONS (SVG) ──────────────────────── */
+/* ── SOURCE NODE BODY ───────────────────────── */
+.gnode-source-body { padding:8px 10px; }
+
+.source-dropzone {
+  display:flex; align-items:center; gap:6px;
+  padding:8px 10px; border-radius:4px;
+  border:1px dashed var(--borderB); color:var(--textD);
+  font-size:11px; cursor:pointer;
+  transition:all var(--t);
+}
+.source-dropzone:hover, .source-dropzone.drag-over { border-color:var(--accent2); color:var(--text); background:rgba(71,198,255,.04); }
+.source-drop-icon { color:var(--accent2); font-size:13px; }
+.source-browse-link { color:var(--accent2); text-decoration:underline; cursor:pointer; }
+
+.source-file-chip {
+  display:flex; align-items:center; gap:6px;
+  padding:6px 8px; border-radius:4px;
+  background:var(--bg4); border:1px solid var(--borderB);
+  font-size:11px;
+}
+.source-file-icon { color:var(--accent2); }
+.source-file-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); max-width:130px; }
+.source-file-size { color:var(--textM); flex-shrink:0; }
+.source-file-remove { background:none; border:none; color:var(--textM); cursor:pointer; font-size:12px; padding:0 2px; transition:color var(--t); }
+.source-file-remove:hover { color:var(--err); }
+
+.source-uploading { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--textD); padding:6px 0; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.source-spin { display:inline-block; animation:spin 1s linear infinite; }
+/* ── GENERATOR NODE ─────────────────────────── */
+.node-generator { border-color: #a78bfa; }
+.node-generator .gnode-header { background: rgba(167,139,250,.08); }
+.node-generator .gnode-name { color: #c4b5fd; }
+.gnode-gen-preview {
+  padding: 6px 10px 8px; display: flex; flex-wrap: wrap; gap: 4px; min-height: 28px;
+}
+.gen-preview-line {
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
+  background: rgba(167,139,250,.12); color: #c4b5fd;
+  border-radius: 3px; padding: 1px 5px; border: 1px solid rgba(167,139,250,.2);
+}
+.gen-preview-more { font-size: 10px; color: var(--textM); align-self: center; }
+.gen-preview-loading { font-size: 10px; color: var(--textM); }
+.gen-preview-err { font-size: 10px; color: var(--err); }
+
+.source-upload-err { font-size:11px; color:var(--err); padding:6px 0; }
 .conn-path {
   fill:none; stroke:var(--accent2); stroke-width:2;
   opacity:.55; pointer-events:stroke; cursor:pointer;

@@ -16,16 +16,18 @@ const Executor = (() => {
     ws.onmessage = (evt) => App.onWsMessage(JSON.parse(evt.data));
   }
 
-  function run(fileId) {
+  function run() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const { nodes, edges } = Graph.state;
-
-    // Build serialisable graph payload
     ws.send(JSON.stringify({
-      type:   'process',
-      fileId,
-      nodes:  nodes.map(n => ({ id: n.id, name: n.name, code: n.code, isSource: n.isSource, isEnd: n.isEnd })),
-      edges:  edges.map(e => ({ fromNode: e.fromNode, toNode: e.toNode, toPort: e.toPort || 0 })),
+      type:  'process',
+      nodes: nodes.map(n => ({
+        id: n.id, name: n.name, code: n.code,
+        isSource: n.isSource, isEnd: n.isEnd,
+        isGenerator: n.isGenerator || false,
+        fileId: n.fileId || null,
+      })),
+      edges: edges.map(e => ({ fromNode: e.fromNode, toNode: e.toNode, toPort: e.toPort || 0 })),
     }));
   }
 
